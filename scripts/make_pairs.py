@@ -1,42 +1,35 @@
-# scripts/make_pairs.py
 import os
 import numpy as np
 
-def add_noise(y, noise_level=0.02):
-    noise = np.random.normal(0, noise_level * np.std(y), size=y.shape)
-    return y + noise
+# Paths
+clean_dir = "data/train/clean"
+noisy_dir = "data/train/noisy"
+pairs_dir = "data/pairs"
 
-def prepare_pairs(input_dir="data/processed", output_dir="data/train", val_split=0.2):
-    files = [f for f in os.listdir(input_dir) if f.endswith(".txt")]
-    os.makedirs(os.path.join(output_dir, "noisy"), exist_ok=True)
-    os.makedirs(os.path.join(output_dir, "clean"), exist_ok=True)
+os.makedirs(pairs_dir, exist_ok=True)
 
-    n_val = int(len(files) * val_split)
-    val_dir = "data/val"
-    os.makedirs(os.path.join(val_dir, "noisy"), exist_ok=True)
-    os.makedirs(os.path.join(val_dir, "clean"), exist_ok=True)
+# Get file lists
+clean_files = sorted([f for f in os.listdir(clean_dir) if f.endswith('.txt')])
+noisy_files = sorted([f for f in os.listdir(noisy_dir) if f.endswith('.txt')])
 
-    for i, fname in enumerate(files):
-        data = np.loadtxt(os.path.join(input_dir, fname), skiprows=1)  # skip header
-        x, y = data[:, 0], data[:, 1]
+# Make sure both folders have same number of files
+assert len(clean_files) == len(noisy_files), "Mismatch between clean and noisy files!"
 
-        noisy_y = add_noise(y, noise_level=0.05)
+for fname_c, fname_n in zip(clean_files, noisy_files):
+    clean_path = os.path.join(clean_dir, fname_c)
+    noisy_path = os.path.join(noisy_dir, fname_n)
 
-        # save clean
-        pair = np.column_stack((x, y))
-        np.savetxt(
-            os.path.join(output_dir if i >= n_val else val_dir, "clean", fname),
-            pair, header="Wavenumber Intensity", comments=""
-        )
+    # Skip header row (assumes first row has text like 'Wavenumber Intensity')
+    clean = np.loadtxt(clean_path, skiprows=1)
+    noisy = np.loadtxt(noisy_path, skiprows=1)
 
-        # save noisy
-        noisy_pair = np.column_stack((x, noisy_y))
-        np.savetxt(
-            os.path.join(output_dir if i >= n_val else val_dir, "noisy", fname),
-            noisy_pair, header="Wavenumber Intensity(noisy)", comments=""
-        )
+    # Use only intensity column (2nd column, index 1)
+    clean_y = clean[:, 1]
+    noisy_y = noisy[:, 1]
 
-    print(f"Generated {len(files) - n_val} train pairs and {n_val} validation pairs")
+    # Save as .npy pair
+    base = os.path.splitext(fname_c)[0]
+    np.save(os.path.join(pairs_dir, f"{base}_clean.npy"), clean_y)
+    np.save(os.path.join(pairs_dir, f"{base}_noisy.npy"), noisy_y)
 
-if __name__ == "__main__":
-    prepare_pairs()
+print(f"✅ Saved {len(clean_files)} pairs to {pairs_dir}")

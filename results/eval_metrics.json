@@ -1,0 +1,17 @@
+{
+    "mean_mse": 6.410580681404099e-05,
+    "mean_psnr": 57.63486862182617,
+    "mean_ssim": 0.9976127520676548,
+    "mean_corr": 0.9955171346664429,
+    "mse_quality": 99.99358367919922,
+    "psnr_quality": 100.0,
+    "ssim_quality": 99.76127520676548,
+    "corr_quality": 99.55171203613281,
+    "overall_quality": 99.8374439939144,
+    "weights": {
+        "mse": 0.2,
+        "psnr": 0.3,
+        "ssim": 0.3,
+        "corr": 0.2
+    }
+}

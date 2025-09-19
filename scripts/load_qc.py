@@ -1,61 +1,89 @@
 import os
 import numpy as np
-from scipy.interpolate import interp1d
 import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
 
-class FTIRDataset:
-    def __init__(self, data_dir, grid_min=400, grid_max=4000, grid_points=1024):
-        self.data_dir = data_dir
-        self.files = sorted([f for f in os.listdir(data_dir) if f.endswith('.txt')])
-        self.wavenumber_grid = np.linspace(grid_max, grid_min, grid_points)
-        
-    def load_spectrum(self, filepath):
-        try:
-            data = np.loadtxt(filepath)
-            wn = data[:, 0]
-            intensity = data[:, 1]
-            return wn, intensity
-        except Exception as e:
-            print(f"Error loading {filepath}: {e}")
-            return None, None
-        
-    def interpolate_spectrum(self, wn, intensity):
-        f = interp1d(wn, intensity, kind='cubic', bounds_error=False, fill_value="extrapolate")
-        interpolated = f(self.wavenumber_grid)
-        return interpolated
-    
-    def is_valid(self, intensity):
-        if np.any(np.isnan(intensity)) or np.any(np.isinf(intensity)):
-            return False
-        if np.max(np.abs(np.diff(intensity))) > 1e3:
-            return False
-        return True
-    
-    def process_all(self):
-        processed = []
-        for file in self.files:
-            filepath = os.path.join(self.data_dir, file)
-            wn, intensity = self.load_spectrum(filepath)
-            if wn is None or intensity is None:
-                continue
-            interpolated = self.interpolate_spectrum(wn, intensity)
-            valid = self.is_valid(interpolated)
-            processed.append({
-                'filename': file,
-                'interpolated': interpolated,
-                'valid': valid
-            })
-        return processed
+# Paths
+pairs_dir = "data/pairs"
+dataset_dir = "data/dataset"
+os.makedirs(dataset_dir, exist_ok=True)
 
-if __name__ == "__main__":
-    dataset = FTIRDataset('data/raw')
-    spectra = dataset.process_all()
-    for spec in spectra:
-        if spec['valid']:
-            plt.plot(dataset.wavenumber_grid, spec['interpolated'], label='Interpolated')
-            plt.xlabel('Wavenumber (cm⁻¹)')
-            plt.ylabel('Intensity')
-            plt.title(f"Spectra from {spec['filename']}")
-            plt.legend()
-            plt.show()
-            break
+def normalize_spectrum(spectrum, method="zscore"):
+    """Normalize spectrum to help model training."""
+    if method == "zscore":
+        mean = spectrum.mean()
+        std = spectrum.std()
+        return (spectrum - mean) / (std + 1e-8)
+    elif method == "minmax":
+        min_val = spectrum.min()
+        max_val = spectrum.max()
+        return (spectrum - min_val) / (max_val - min_val + 1e-8)
+    else:
+        return spectrum
+
+# Get list of clean files
+clean_files = sorted([f for f in os.listdir(pairs_dir) if f.endswith("_clean.npy")])
+
+X_noisy = []
+Y_clean = []
+
+print(f"Found {len(clean_files)} clean/noisy pairs.")
+
+for fname_c in clean_files:
+    base = fname_c.replace("_clean.npy", "")
+    fname_n = f"{base}_noisy.npy"
+
+    clean_path = os.path.join(pairs_dir, fname_c)
+    noisy_path = os.path.join(pairs_dir, fname_n)
+
+    clean_y = np.load(clean_path)
+    noisy_y = np.load(noisy_path)
+
+    if clean_y.shape != noisy_y.shape:
+        print(f"❌ Length mismatch in {base}: clean={clean_y.shape}, noisy={noisy_y.shape}")
+        continue
+
+    # Normalize spectra (z-score by default)
+    clean_y = normalize_spectrum(clean_y, method="zscore")
+    noisy_y = normalize_spectrum(noisy_y, method="zscore")
+
+    Y_clean.append(clean_y)
+    X_noisy.append(noisy_y)
+
+    # Quick QC plot
+    plt.figure(figsize=(10, 4))
+    plt.plot(clean_y, label="Clean (norm)", linewidth=2)
+    plt.plot(noisy_y, label="Noisy (norm)", alpha=0.7)
+    plt.title(f"QC Pair (Normalized): {base}")
+    plt.xlabel("Index")
+    plt.ylabel("Normalized Intensity")
+    plt.legend()
+    plt.show()
+
+    stop = input("Press Enter for next, or 'q' to quit QC early: ")
+    if stop.lower() == 'q':
+        break
+
+# Convert to arrays
+X_noisy = np.array(X_noisy, dtype=np.float32)
+Y_clean = np.array(Y_clean, dtype=np.float32)
+
+print(f"\nFinal dataset shapes: X_noisy={X_noisy.shape}, Y_clean={Y_clean.shape}")
+
+# Train/test split
+X_train, X_test, Y_train, Y_test = train_test_split(
+    X_noisy, Y_clean, test_size=0.2, random_state=42
+)
+
+print(f"Train: X={X_train.shape}, Y={Y_train.shape}")
+print(f"Test:  X={X_test.shape}, Y={Y_test.shape}")
+
+# Save
+np.save(os.path.join(dataset_dir, "X_noisy.npy"), X_noisy)
+np.save(os.path.join(dataset_dir, "Y_clean.npy"), Y_clean)
+np.save(os.path.join(dataset_dir, "X_train.npy"), X_train)
+np.save(os.path.join(dataset_dir, "Y_train.npy"), Y_train)
+np.save(os.path.join(dataset_dir, "X_test.npy"), X_test)
+np.save(os.path.join(dataset_dir, "Y_test.npy"), Y_test)
+
+print(f"✅ Saved normalized + split dataset to {dataset_dir}")

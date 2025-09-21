@@ -2,8 +2,8 @@ import os
 import numpy as np
 
 # Paths
-clean_dir = "data/train/clean"
-noisy_dir = "data/train/noisy"
+clean_dir = "data/processed"
+noisy_dir = "data/raw"
 pairs_dir = "data/pairs"
 
 os.makedirs(pairs_dir, exist_ok=True)

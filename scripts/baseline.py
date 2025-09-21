@@ -4,15 +4,15 @@ from pybaselines.whittaker import asls
 import matplotlib.pyplot as plt
 
 def process_file(file_path, output_dir, plot=False):
-    # Load 2-column txt: [wavenumber, intensity]
-    data = np.loadtxt(file_path)
+    # Load 2-column txt, skipping the header row
+    data = np.loadtxt(file_path, skiprows=1)
     if data.ndim != 2 or data.shape[1] < 2:
         raise ValueError(f"File {file_path} does not have 2 columns")
 
     x, y = data[:, 0], data[:, 1]
 
-    # Apply ALS baseline correction
-    baseline, _ = asls(y, lam=1e6, p=0.01)
+    # Apply baseline correction
+    baseline, _ = asls(y, lam=1e4, p=0.08)
     corrected = y - baseline
 
     # Save corrected spectrum
@@ -24,7 +24,7 @@ def process_file(file_path, output_dir, plot=False):
     if plot:
         plt.figure(figsize=(8, 4))
         plt.plot(x, y, label="Original")
-        plt.plot(x, baseline, label="Baseline")
+        plt.plot(x, baseline, label="Baseline (asls)")
         plt.plot(x, corrected, label="Corrected")
         plt.title(os.path.basename(file_path))
         plt.xlabel("Wavenumber")
@@ -49,5 +49,4 @@ def batch_process(input_dir="data/raw", output_dir="data/processed", plot=False)
             print(f"⚠ Error processing {fname}: {e}")
 
 if __name__ == "__main__":
-    # Change plot=True if you want to see plots while processing
     batch_process(plot=False)

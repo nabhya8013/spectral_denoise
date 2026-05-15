@@ -5,7 +5,141 @@
 | Round | Date | Peak Shift | RMSE FP | Noise Floor | PSNR | Overall Quality |
 |-------|------|-----------|---------|-------------|------|-----------------|
 | v1 (baseline) | Apr 17 R1 | 0.4062 | 0.1835 | 0.0343 | 49.51 | 94.25% |
-| **v2 (current)** | **Apr 17 R2** | **0.1562** | **0.1823** | **0.0295** | **47.77** | **95.10%** |
+| v2 | Apr 17 R2 | 0.1562 | 0.1823 | 0.0295 | 47.77 | 95.10% |
+| v4 scientific polish | May 11 | 0.201 | 0.1180 | 0.0411 | 42.71 | 95.50% |
+| **v5 metric polish** | **May 11** | **0.195** | **0.1114** | **0.0379** | **43.20** | **95.81%** |
+| **v6 head-only polish** | **May 11** | **0.193** | **0.1117** | **0.0336** | **43.45** | **95.97%** |
+
+---
+
+## Round 6 — Head-Only Metric Polish
+
+Round 6 changed the optimization strategy rather than the architecture: the encoder/backbone was frozen and only the output/refinement heads were fine-tuned (`TRAINABLE_SCOPE=head`, 0.106M / 8.122M trainable parameters). This preserved learned spectral features while polishing the official quality metric.
+
+| Metric | v5 metric polish | **v6 head-only polish** | Delta | Verdict |
+|--------|:---:|:---:|:---:|---|
+| **Overall Quality** | 95.81% | **95.97%** | +0.16 pp | ✅ Promoted |
+| **MSE** | 0.000282 | **0.000269** | −4.6% | ✅ |
+| **PSNR** | 43.20 dB | **43.45 dB** | +0.25 dB | ✅ |
+| **SSIM** | 0.99847 | **0.99856** | +0.00009 | ✅ |
+| **Correlation** | 0.99709 | **0.99724** | +0.00015 | ✅ |
+| **Boundary RMSE** | 0.684 | **0.668** | −2.3% | ✅ |
+| **Midband RMSE** | 0.085 | **0.058** | −32% | ✅ |
+| **High-wn RMSE** | 0.081 | **0.070** | −14% | ✅ |
+| **Noise floor std** | 0.0379 | **0.0336** | −11% | ✅ |
+| **Peak shift** | 0.195 | **0.193** | −1% | ✅ |
+| **Fingerprint RMSE** | 0.1114 | **0.1117** | +0.0003 | ⚠️ effectively flat |
+
+The head-only run peaked at **95.97%** and was promoted. A follow-up lower-LR head-only continuation plateaued and was rejected by the improvement gate, so the repo now keeps only the best promoted checkpoint.
+
+Current clean repo state:
+
+- Best checkpoint: `models/resunet1d_single_stage_final.pth`
+- Best metrics: `results/resunet_single_stage_final.json`
+- Candidate checkpoints/results from failed or superseded runs have been removed.
+
+---
+
+## Round 5 — Metric-Polish Fine-Tuning
+
+### Strategy Shift
+
+Round 4 used aggressive physics-aware losses and spectral attention to push fingerprint fidelity. Round 5 took the opposite approach — **gentle metric polish**:
+
+| Dimension | Round 4 (scientific) | Round 5 (metric polish) | Rationale |
+|---|---|---|---|
+| **LR** | max 1e-5 / min 3e-6 | **max 6e-6 / min 2e-6** | 60% lower — avoid disrupting learned features |
+| **Epochs** | 12 | **16** | Longer fine-tuning runway |
+| **Augmentation** | off | **off** | Clean gradient signal |
+| **Checkpoint selection** | review score | **overall_quality** | Optimize the primary metric directly |
+| **Global reconstruction** | MSE 0.75 | **MSE 0.90** | Increased — let the model sharpen global fit |
+| **Peak/physics aggressiveness** | high | **reduced** | Pulled back peak_center (1.35→1.1), peak_profile (0.58→0.42), peak_point_weight (2.7→2.2), fingerprint_point_weight (3.0→2.0) |
+| **Smoothing** | smooth_consistency 0.01 | **0.018** | Increased — helps recover noise floor |
+| **New losses** | extrema 0.08, sobolev 0.06, baseline_drift 0.02 | **extrema 0.04, sobolev 0.03, baseline_drift 0.015** | Halved — conservative presence without gradient competition |
+| **Peak dominance** | 0.02 | **0.0** | Disabled — was conflicting with global MSE |
+
+### Results — All Metrics Improved
+
+| Metric | v4 (scientific) | **v5 (metric polish)** | Δ | Verdict |
+|--------|:---:|:---:|:---:|---|
+| **Overall Quality** | 95.50% | **95.81%** | +0.31 pp | ✅ Promoted |
+| **MSE** | 0.000361 | **0.000282** | −22% | ✅ |
+| **PSNR** | 42.71 dB | **43.20 dB** | +0.49 dB | ✅ |
+| **SSIM** | 0.99803 | **0.99847** | +0.00044 | ✅ |
+| **Correlation** | 0.99674 | **0.99709** | +0.00035 | ✅ |
+| **Fingerprint RMSE** | 0.1180 | **0.1114** | −0.0066 | ✅ |
+| **Boundary RMSE** | 0.767 | **0.684** | −11% | ✅ |
+| **Midband RMSE** | 0.101 | **0.085** | −16% | ✅ Recovered |
+| **High-wn RMSE** | 0.090 | **0.081** | −10% | ✅ |
+| **Noise floor std** | 0.0411 | **0.0379** | −8% | ✅ Recovered |
+| **Peak shift** | 0.201 | **0.195** | −3% | ✅ |
+| **Selection score** | 92.64 | **92.98** | +0.34 | ✅ |
+| **Review score** | 93.53 | **93.92** | +0.39 | ✅ |
+
+> [!TIP]
+> This is the first round where **every single metric improved simultaneously** — no tradeoffs. The key insight: after Round 4 added the right architectural capacity (spectral attention, detail head, positional bias), Round 5 let the model learn to *use* that capacity optimally by reducing gradient competition and giving global MSE more weight.
+
+### Training Dynamics
+
+- 16 epochs, all improving monotonically — zero oscillation
+- Overall quality: 95.48% (ep1) → 95.81% (ep16), gaining ~0.02%/epoch
+- Noise floor *decreased* every epoch (0.0413 → 0.0379) — the `smooth_consistency=0.018` bump worked
+- Fingerprint RMSE tracked downward smoothly: 0.1183 → 0.1114
+- **Still improving at epoch 16** — no plateau visible
+
+### Loss Weight Budget (v5 vs v4)
+
+```
+v5 budget:
+Global reconstruction:  MSE(0.90) + L1(0.16) + D1(0.42) + D2(0.32) = 1.80   (38%) ← UP from 30%
+Smoothing forces:       TV(0.0015) + smooth(0.018) + baseline(0.035) = 0.055  (1%)
+Edge terms:             edge_L1(0.06) + edge_D1(0.05) = 0.11                  (2%)
+Peak terms:             amp(0.22) + profile(0.42) + center(1.1) + align(0.38) = 2.12 (45%)
+Fingerprint terms:      fp_L1(0.22) + fp_MSE(0.18) + fp_D1(0.12) = 0.52      (11%) ← down from 17%
+New physics:            extrema(0.04) + sobolev(0.03) + drift(0.015) = 0.085  (2%)  ← halved
+Valley:                 valley(0.30) + valley_center(0.20) = 0.50             (11%)
+Other:                  curvature(0.40) + fft(0.05) = 0.45                    (10%)
+                                                          TOTAL ≈ 4.71
+```
+
+Key shift vs v4: global reconstruction share increased from ~30% to ~38%, fingerprint-specific dropped from 17% to 11%, physics losses halved. The model spent more gradient budget on overall fit quality, which lifted all boats.
+
+### Why This Worked
+
+1. **Architectural capacity was already in place** — SpectralAttention1D, detail head, positional/derivative bias from Round 4 gave the model the *ability* to reconstruct fine spectral features. Round 5 just needed to optimize the weights.
+
+2. **Checkpoint selection by `overall_quality`** instead of `review_score` — this directly optimized the promotion metric, avoiding proxy misalignment.
+
+3. **Higher MSE weight (0.75→0.90)** provided a stronger "gravitational pull" toward the clean target across all spectral regions, which secondarily improved fingerprint/boundary/midband without dedicated losses.
+
+4. **Smooth consistency bump (0.01→0.018)** directly targeted the noise floor regression from Round 4, recovering it from 0.041 to 0.038.
+
+5. **Very low LR (max 6e-6)** prevented catastrophic forgetting of Round 4's learned spectral attention patterns.
+
+---
+
+## Round 4 — Scientific-Grade Promotion Verdict
+
+**Verdict: promotion justified.** The promoted checkpoint improved the official validation quality from **95.15% → 95.50%** while preserving the safety gate: training wrote to a candidate checkpoint first and promoted only after exceeding both the 95% floor and the previously promoted model.
+
+Core validation deltas versus the previous promoted model:
+
+| Metric | Previous | Round 4 | Delta | Verdict |
+|--------|----------|---------|-------|---------|
+| `overall_quality` | 95.149% | **95.497%** | +0.348 pp | ✅ promoted |
+| `mse` | ~0.000488 | **0.000361** | ~−26% | ✅ better reconstruction |
+| `psnr` | 42.19 dB | **42.71 dB** | +0.52 dB | ✅ cleaner global signal |
+| `ssim` | 0.9973 | **0.9980** | +0.0007 | ✅ stronger structure |
+| `corr` | 0.9963 | **0.9967** | +0.0004 | ✅ stronger correlation |
+| `rmse_fingerprint` | 0.1221 | **0.1180** | −0.0041 | ✅ better analytical band |
+| `noise_floor_std` | 0.0313 | **0.0411** | +31% | ⚠️ acceptable tradeoff |
+
+Key implementation changes reviewed:
+
+- `SpectralAttention1D` is zero-initialized and position-aware, so it can learn fingerprint emphasis without disrupting pretrained weights at load time.
+- Promotion is production-safe: candidate checkpoint path, promoted checkpoint path, 95% minimum quality, and improvement-over-current requirement are separate gates.
+- New physics losses are active at conservative weights: `extrema_mse`, `sobolev_l1`, and `baseline_drift`.
+- New realistic corruptions exist in augmentation: impulse spikes, fringe noise, and polynomial baseline drift. The promoted Round 4 model used `augment: false`, so these augmentations are implemented but not yet validated in a promoted run.
 
 ---
 
@@ -73,201 +207,37 @@ The fingerprint band covers indices 104–726 (~622 points out of 1868). The fin
 
 ---
 
-## Round 3 — Exact Changes to Apply
+## Historical Notes
 
-### Strategy: Simplify & Amplify
+### Round 3 Planning (Superseded)
 
-Instead of adding more loss terms, **consolidate and rebalance** the existing ones. Cut smoothing forces, amplify fingerprint/peak forces, train longer.
+Round 3 was planned as a "Simplify & Amplify" rebalance of loss weights from v2 defaults (documented in the original review). The actual execution diverged from the plan — Round 4 took a more aggressive approach with new architecture modules (SpectralAttention1D, detail head, positional/derivative bias) and physics-aware losses, which proved more effective than pure weight rebalancing. The Round 3 env var tables and shell blocks have been removed from this document since they no longer reflect the current training pipeline.
 
-### Complete Environment Variable Changes
+### v3 (skipped)
 
-Below is the exact diff of every env var that needs to change. Copy-paste the export block into your shell before running `python scripts/train_resunet.py`, or modify `run_pipeline.sh`.
-
-#### Training Config Changes
-
-| Env Var | v2 (current) | v3 (new) | Why |
-|---------|-------------|----------|-----|
-| `EPOCHS` | 8 | **20** | Model was still improving at epoch 8, needs more time |
-| `MAX_LR` | 6e-5 | **1.2e-4** | Warmer exploration for the rebalanced loss surface |
-| `MIN_LR` | 1e-5 | **8e-6** | Slight bump for better late-stage refinement |
-| `PATIENCE` | 4 | **7** | Let the model explore longer before early stopping |
-| `EMA_DECAY` | 0.995 | **0.996** | Smoother EMA for stability with many loss terms |
-
-#### Loss Weight Changes — Decrease (Free Up Gradient Budget)
-
-| Env Var | v2 (current) | v3 (new) | Why |
-|---------|-------------|----------|-----|
-| `LOSS_W_MSE` | 1.0 | **0.60** | Too dominant, drowns out fingerprint losses |
-| `LOSS_W_L1` | 0.25 | **0.20** | Slight reduction to rebalance |
-| `LOSS_W_D1` | 0.6 | **0.50** | Over-constraining, slight pullback |
-| `LOSS_W_D2` | 0.35 | **0.25** | Over-constraining curvature at peaks |
-| `LOSS_W_TV` | 0.006 | **0.002** | **Critical** — this is actively rounding peaks |
-| `LOSS_W_BASELINE` | 0.05 | **0.03** | Baseline is already well-reconstructed |
-| `LOSS_W_SMOOTH_CONSISTENCY` | 0.025 | **0.012** | Also fights peak sharpness |
-| `LOSS_W_EDGE_L1` | 0.18 | **0.10** | Edges are fine, don't need this much weight |
-| `LOSS_W_EDGE_D1` | 0.12 | **0.08** | Same — edges already converged |
-
-#### Loss Weight Changes — Increase (Focus on Remaining Issues)
-
-| Env Var | v2 (current) | v3 (new) | Why |
-|---------|-------------|----------|-----|
-| `LOSS_W_AMP` | 0.2 | **0.25** | Stronger amplitude enforcement for deeper troughs |
-| `LOSS_W_PEAK_PROFILE` | 0.4 | **0.50** | Sharper peak window reconstruction |
-| `LOSS_W_PEAK_CENTER` | 1.1 | **1.20** | Lock peak positions even harder |
-| `PEAK_POINT_WEIGHT` | 2.2 | **2.5** | Heavier per-point weight at peak locations |
-| `PEAK_SOFTMAX_TEMP` | 22.0 | **25.0** | Sharper softmax = more precise centering |
-| `LOSS_W_FINGERPRINT_L1` | 0.16 | **0.35** | **Critical** — >2× increase to dominate gradient |
-| `LOSS_W_FINGERPRINT_MSE` | 0.16 | **0.30** | **Critical** — >2× increase |
-| `LOSS_W_FINGERPRINT_D1` | 0.12 | **0.20** | Derivative matching in fingerprint band |
-| `FINGERPRINT_POINT_WEIGHT` | 2.0 | **3.0** | Make fingerprint points 3× as important in global L1 |
-| `LOSS_W_VALLEY_UNDER` | 0.22 | **0.30** | Peaks aren't reaching full trough depth |
-| `VALLEY_QUANTILE` | 0.22 | **0.18** | Catch more valley points for depth enforcement |
-
-#### No Change (Keep As-Is)
-
-| Env Var | Value | Why |
-|---------|-------|-----|
-| `LOSS_W_PEAK_ALIGN` | 0.30 | Working — fixed the peak shift |
-| `PEAK_ALIGN_WINDOW` | 5 | Working |
-| `PEAK_ALIGN_WEIGHT` | 2.4 | Working |
-| `LOSS_W_FFT` | 0.05 | Fine |
-| `HARD_SAMPLE_FILE` | results/hard_peak_review_samples_v2.txt | Keep |
-| `HARD_SAMPLE_MULTIPLIER` | 14.0 | Keep |
-| `USE_SKIP_GATES` | 1 | Keep |
-| `USE_SE` | 1 | Keep |
-| `USE_MULTISCALE_CONTEXT` | 1 | Keep |
-| `INIT_MODEL_PATH` | models/resunet1d_single_stage_final.pth | Fine-tune from v2 |
-
-### Copy-Paste Shell Block
-
-```bash
-# === ROUND 3 — Copy-paste this before running train_resunet.py ===
-
-# Training config
-export EPOCHS=20
-export MAX_LR=1.2e-4
-export MIN_LR=8e-6
-export PATIENCE=7
-export EMA_DECAY=0.996
-
-# Architecture (unchanged from v2)
-export USE_SKIP_GATES=1
-export USE_SE=1
-export USE_MULTISCALE_CONTEXT=1
-export USE_INPUT_MEDIAN=0
-export USE_SPIKE_SUPPRESSOR=0
-
-# Init from v2 best weights
-export INIT_MODEL_PATH=models/resunet1d_single_stage_final.pth
-
-# Output paths (save as new file to preserve v2 for comparison)
-export MODEL_PATH=models/resunet1d_single_stage_final.pth
-export RESULTS_PATH=results/resunet_single_stage_final.json
-
-# --- LOSS WEIGHTS: DECREASED (free gradient budget) ---
-export LOSS_W_MSE=0.60
-export LOSS_W_L1=0.20
-export LOSS_W_D1=0.50
-export LOSS_W_D2=0.25
-export LOSS_W_TV=0.002
-export LOSS_W_BASELINE=0.03
-export LOSS_W_SMOOTH_CONSISTENCY=0.012
-export LOSS_W_EDGE_L1=0.10
-export LOSS_W_EDGE_D1=0.08
-
-# --- LOSS WEIGHTS: INCREASED (focus on remaining issues) ---
-export LOSS_W_AMP=0.25
-export LOSS_W_PEAK_PROFILE=0.50
-export LOSS_W_PEAK_CENTER=1.20
-export PEAK_POINT_WEIGHT=2.5
-export PEAK_SOFTMAX_TEMP=25.0
-export LOSS_W_FINGERPRINT_L1=0.35
-export LOSS_W_FINGERPRINT_MSE=0.30
-export LOSS_W_FINGERPRINT_D1=0.20
-export FINGERPRINT_POINT_WEIGHT=3.0
-export LOSS_W_VALLEY_UNDER=0.30
-export VALLEY_QUANTILE=0.18
-
-# --- LOSS WEIGHTS: UNCHANGED (working fine) ---
-export LOSS_W_FFT=0.05
-export LOSS_W_PEAK_ALIGN=0.30
-export PEAK_ALIGN_WINDOW=5
-export PEAK_ALIGN_WEIGHT=2.4
-export SLOPE_POINT_WEIGHT=1.2
-export MASK_LEADING_POINTS=3
-export PEAK_WINDOW_RADIUS=5
-export PEAK_QUANTILE=0.8
-export FINGERPRINT_START=104
-export FINGERPRINT_END=726
-export HARD_SAMPLE_FILE=results/hard_peak_review_samples_v2.txt
-export HARD_SAMPLE_MULTIPLIER=14.0
-
-# === Run training ===
-python scripts/train_resunet.py
-```
-
-### Architecture — No Changes Needed
-
-The v2 architecture (skip gates + SE + multiscale context) is correct. The problem is purely in loss weighting and training duration.
-
-### Augmentation — Verify Shift Reduction Applied
-
-Confirm these from Round 1 recommendations are still in effect in `scripts/augment_data.py`:
-```python
-# spectral_shift: probability ≤ 0.08, magnitude ≤ ±0.8
-# elastic_warp: probability ≤ 0.05, alpha ≤ 0.6
-```
+No v3 checkpoint was promoted. The jump from v2 to v4 in the revision history reflects that the first successful promotion after v2 was the scientific-grade Round 4 run.
 
 ---
 
-## Weight Budget Analysis
+## Success Criteria — Current Status
 
-### v2 Total Loss Weight Distribution
-```
-Global reconstruction:  MSE(1.0) + L1(0.25) + D1(0.6) + D2(0.35) = 2.20  (47%)
-Smoothing forces:       TV(0.006) + smooth(0.025) + baseline(0.05) = 0.081 (2%)
-Edge terms:             edge_L1(0.18) + edge_D1(0.12) = 0.30               (6%)
-Peak terms:             amp(0.2) + profile(0.4) + center(1.1) + align(0.3) = 2.00 (43%)
-Fingerprint terms:      fp_L1(0.16) + fp_MSE(0.16) + fp_D1(0.12) = 0.44   (9%)
-Valley:                 valley(0.22) = 0.22                                  (5%)
-FFT:                    fft(0.05) = 0.05                                     (1%)
-                                                          TOTAL ≈ 4.67
-Fingerprint share of total gradient: ~9%
-```
-
-### v3 Target Distribution
-```
-Global reconstruction:  MSE(0.6) + L1(0.2) + D1(0.5) + D2(0.25) = 1.55   (30%)  ← reduced
-Smoothing forces:       TV(0.002) + smooth(0.012) + baseline(0.03) = 0.044 (1%)   ← halved
-Edge terms:             edge_L1(0.10) + edge_D1(0.08) = 0.18               (4%)   ← reduced
-Peak terms:             amp(0.25) + profile(0.5) + center(1.2) + align(0.3) = 2.25 (44%) ← increased
-Fingerprint terms:      fp_L1(0.35) + fp_MSE(0.30) + fp_D1(0.20) = 0.85   (17%)  ← DOUBLED
-Valley:                 valley(0.30) = 0.30                                  (6%)  ← increased
-FFT:                    fft(0.05) = 0.05                                     (1%)
-                                                          TOTAL ≈ 5.12
-Fingerprint share of total gradient: ~17% (was 9%)
-```
-
-Key shift: Fingerprint gradient share nearly doubled (9% → 17%), smoothing forces halved (2% → 1%), global reconstruction reduced (47% → 30%). The fingerprint band is now the second-largest gradient contributor after peak terms.
-
----
-
-## Success Criteria for Round 3
-
-| Metric | v2 (current) | Round 3 Target | Stretch Goal |
-|--------|-------------|----------------|--------------|
-| `peak_shift_mean_abs` | 0.1562 | ≤ 0.12 | ≤ 0.08 |
-| `rmse_fingerprint` | 0.1823 | **≤ 0.10** | ≤ 0.06 |
-| `peak_amp_mae` | 0.1254 | ≤ 0.08 | ≤ 0.05 |
-| `noise_floor_std` | 0.0295 | ≤ 0.015 | ≤ 0.008 |
-| `psnr` | 47.77 | ≥ 49.0 | ≥ 51.0 |
-| `overall_quality` | 95.10% | ≥ 96.0% | ≥ 97.0% |
-
-> [!WARNING]
-> **The fingerprint RMSE (0.18 → target 0.10) is the single most important metric.** If only one thing improves in Round 3, it must be this. The v2 changes added fingerprint losses but at weights too low to matter against 15 other terms. Round 3 must make the fingerprint band the **dominant gradient source**.
-
-> [!TIP]
-> **Monitor the PSNR vs fingerprint RMSE tradeoff.** If PSNR drops further while fingerprint RMSE improves, that's acceptable — it means the model is reallocating capacity from easy flat regions to hard peak regions. A model with PSNR 46 and fingerprint RMSE 0.06 is more useful for downstream classification than one with PSNR 50 and fingerprint RMSE 0.18.
+| Metric | v2 baseline | Original Target | Current (v6) | Status |
+|--------|:-----------:|:---------------:|:------------:|--------|
+| `peak_shift_mean_abs` | 0.1562 | ≤ 0.12 | **0.193** | 🟡 Aggregate peak shift remains above target |
+| `rmse_fingerprint` | 0.1823 | **≤ 0.10** | **0.1117** | 🟡 Significant progress (0.18→0.11), not yet at 0.10 |
+| `noise_floor_std` | 0.0295 | ≤ 0.015 | **0.0336** | 🟡 Slightly above v2, well below v4's 0.041 |
+| `psnr` | 47.77 | ≥ 49.0 | **43.45** | 🔴 Below target — tradeoff for fingerprint/peak fidelity |
+| `overall_quality` | 95.10% | ≥ 96.0% | **95.97%** | ✅ Nearly at target |
 
 > [!NOTE]
-> **After retraining**, regenerate sample 778 plots with `python scripts/export_eval_plots.py` and compare against this document. Update the Revision History table with v3 numbers.
+> The next work should target the final 0.03 percentage points to reach 96% overall without reintroducing full-backbone drift. The most productive approach so far is scoped metric polish (`TRAINABLE_SCOPE=head`, `CHECKPOINT_SCORE_MODE=overall`), not stronger augmentation or heavier physics losses. Future runs should also set `MAX_PROMOTION_FP_RMSE=0.1118` so a checkpoint cannot promote by trading away fingerprint fidelity.
+
+### Round 7 Attempt — Peak Integrity Constraint
+
+Several candidate runs were tested after the 95.97% checkpoint:
+
+- `attention_head` could cross 96% overall, but did so by increasing fingerprint RMSE and was rejected.
+- `head` and `decoder` peak-focused runs improved or held individual peak terms in places, but did not beat the full validation gates.
+- A 10% weight interpolation improved sample `696` peak shift to `0.0` and PSNR to ~48.01 dB, but full validation regressed slightly (`overall_quality`, fingerprint RMSE, aggregate peak shift, and peak amplitude), so it was not promoted.
+
+Conclusion: the current best model remains the correct production checkpoint. The FRMSE/peak-integrity gates are necessary because the easiest path to 96% overall is currently to trade away fingerprint fidelity.

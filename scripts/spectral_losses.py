@@ -122,6 +122,12 @@ class CompositeSpectralLoss(nn.Module):
         peak_focus_end: int = -1,
         w_peak_dominance: float = 0.0,
         peak_dominance_margin_scale: float = 0.25,
+        w_extrema_mse: float = 0.0,
+        extrema_window: int = 7,
+        extrema_weight: float = 3.0,
+        w_sobolev_l1: float = 0.0,
+        w_baseline_drift: float = 0.0,
+        baseline_drift_kernel: int = 65,
     ):
         super().__init__()
         self.w_mse = w_mse
@@ -163,6 +169,12 @@ class CompositeSpectralLoss(nn.Module):
         self.peak_focus_end = peak_focus_end
         self.w_peak_dominance = w_peak_dominance
         self.peak_dominance_margin_scale = peak_dominance_margin_scale
+        self.w_extrema_mse = w_extrema_mse
+        self.extrema_window = max(1, int(extrema_window))
+        self.extrema_weight = extrema_weight
+        self.w_sobolev_l1 = w_sobolev_l1
+        self.w_baseline_drift = w_baseline_drift
+        self.baseline_drift_kernel = baseline_drift_kernel
         self.peak_alignment = PeakAlignmentLoss(window=peak_align_window, weight=peak_align_weight)
 
     def _supervision_mask(self, target: torch.Tensor) -> torch.Tensor:
@@ -202,6 +214,28 @@ class CompositeSpectralLoss(nn.Module):
         mask = torch.zeros_like(target)
         mask[..., start:end] = 1.0
         return mask
+
+    def _extrema_weights(self, target: torch.Tensor, focus_mask: torch.Tensor, supervision_mask: torch.Tensor) -> torch.Tensor:
+        d1_target = first_derivative(target)
+        sign_change = (d1_target[..., :-1] * d1_target[..., 1:]) < 0
+        extrema_mask = sign_change.float()
+        if self.extrema_window > 1:
+            pad = self.extrema_window // 2
+            extrema_mask = F.max_pool1d(
+                F.pad(extrema_mask, (pad, pad), mode="replicate"),
+                kernel_size=self.extrema_window,
+                stride=1,
+            )
+            extrema_mask = extrema_mask[..., : max(target.size(-1) - 2, 1)]
+        extrema_mask = F.pad(extrema_mask, (1, 1), mode="replicate")
+        if extrema_mask.size(-1) != target.size(-1):
+            extrema_mask = F.interpolate(extrema_mask, size=target.size(-1), mode="nearest")
+
+        slopes = torch.abs(d1_target)
+        slope_threshold = torch.quantile(slopes.view(slopes.size(0), -1), 0.85, dim=1).view(-1, 1, 1)
+        slope_mask = F.pad((slopes >= slope_threshold).float(), (1, 0), mode="replicate")
+        extrema_mask = torch.maximum(extrema_mask, slope_mask)
+        return (1.0 + self.extrema_weight * extrema_mask) * focus_mask * supervision_mask
 
     def _curvature_weighted_mse(self, pred: torch.Tensor, target: torch.Tensor, region_mask: torch.Tensor) -> torch.Tensor:
         d2_target = torch.abs(second_derivative(target))
@@ -358,6 +392,7 @@ class CompositeSpectralLoss(nn.Module):
         l1 = _weighted_l1(pred, target, point_weights)
         d1 = _weighted_mse(first_derivative(pred), first_derivative(target), d1_weights)
         d2 = _weighted_mse(second_derivative(pred), second_derivative(target), d2_weights)
+        sobolev_l1 = _weighted_l1(first_derivative(pred), first_derivative(target), d1_weights)
 
         pred_fft = torch.fft.rfft(pred.float(), dim=-1)
         target_fft = torch.fft.rfft(target.float(), dim=-1)
@@ -368,6 +403,7 @@ class CompositeSpectralLoss(nn.Module):
         peak_mask = (target_abs >= peak_threshold.view(-1, 1, 1)).float() * supervision_mask
         amplitude = _masked_l1(pred, target, peak_mask)
         focus_mask = self._focus_mask(target) * supervision_mask
+        extrema_mse = _weighted_mse(pred, target, self._extrema_weights(target, focus_mask, supervision_mask))
         peak_windows, peak_center, peak_dominance = self._peak_windows_and_center_loss(pred, target, focus_mask)
         peak_profile = _masked_l1(pred, target, peak_windows * supervision_mask)
 
@@ -375,6 +411,8 @@ class CompositeSpectralLoss(nn.Module):
         baseline_mask = (target_abs <= baseline_threshold.view(-1, 1, 1)).float() * supervision_mask
         baseline = _masked_l1(pred, target, baseline_mask)
         smooth_consistency = _masked_mse(pred, _smoothed_signal(pred, self.smooth_kernel_size), baseline_mask)
+        baseline_residual = _smoothed_signal((pred - target) * baseline_mask, self.baseline_drift_kernel)
+        baseline_drift = torch.sum((baseline_residual ** 2) * baseline_mask) / baseline_mask.sum().clamp_min(1.0)
 
         edge_points = min(self.edge_points, target.size(-1))
         if edge_points > 1:
@@ -419,13 +457,16 @@ class CompositeSpectralLoss(nn.Module):
             + self.w_peak_profile * peak_profile
             + self.w_peak_center * peak_center
             + self.w_peak_dominance * peak_dominance
+            + self.w_extrema_mse * extrema_mse
             + self.w_edge_l1 * edge_l1
             + self.w_edge_d1 * edge_d1
             + self.w_fingerprint_l1 * fingerprint_l1
             + self.w_fingerprint_mse * fingerprint_mse
             + self.w_curvature_mse * curvature_mse
             + self.w_fingerprint_d1 * fingerprint_d1
+            + self.w_sobolev_l1 * sobolev_l1
             + self.w_valley_under * valley_under
             + self.w_valley_center * valley_center
             + self.w_peak_align * peak_align
+            + self.w_baseline_drift * baseline_drift
         )

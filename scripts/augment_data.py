@@ -42,6 +42,55 @@ def add_spikes(intensity, num_spikes=5, spike_height=0.5):
     return corrupted
 
 
+def add_impulse_spikes(intensity, max_spikes=8, amp_std_range=(2.0, 8.0), max_width=5):
+    """Add bipolar impulse artifacts resembling cosmic rays and detector dropouts."""
+    corrupted = intensity.copy()
+    n = len(intensity)
+    signal_std = max(float(np.std(intensity)), 1e-3)
+    num_spikes = np.random.randint(0, max_spikes + 1)
+    for _ in range(num_spikes):
+        center = np.random.randint(0, n)
+        width = np.random.randint(1, max_width + 1)
+        left = max(0, center - width // 2)
+        right = min(n, left + width)
+        sign = -1.0 if np.random.rand() < 0.45 else 1.0
+        amp = sign * np.random.uniform(*amp_std_range) * signal_std
+        if width == 1:
+            corrupted[left:right] += amp
+        else:
+            window = np.hanning(width + 2)[1:-1]
+            corrupted[left:right] += amp * window[: right - left]
+    return corrupted.astype(np.float32)
+
+
+def add_fringe_noise(intensity, amp_range=(0.002, 0.020), cycles_range=(3.0, 28.0)):
+    """Add sinusoidal interference fringes with slow amplitude modulation."""
+    n = len(intensity)
+    x = np.linspace(0.0, 1.0, n, dtype=np.float32)
+    signal_scale = max(float(np.std(intensity)), 1e-3)
+    cycles = np.random.uniform(*cycles_range)
+    phase = np.random.uniform(0.0, 2.0 * np.pi)
+    envelope_phase = np.random.uniform(0.0, 2.0 * np.pi)
+    envelope = 0.65 + 0.35 * np.sin(2.0 * np.pi * np.random.uniform(0.5, 2.5) * x + envelope_phase)
+    fringe = np.random.uniform(*amp_range) * signal_scale * envelope * np.sin(2.0 * np.pi * cycles * x + phase)
+    return (intensity + fringe).astype(np.float32)
+
+
+def add_polynomial_baseline(intensity, strength=0.035, order=3):
+    """Add sloping/curved baseline drift with zero-centered random polynomial terms."""
+    n = len(intensity)
+    x = np.linspace(-1.0, 1.0, n, dtype=np.float32)
+    signal_scale = max(float(np.std(intensity)), 1e-3)
+    coeffs = np.random.uniform(-1.0, 1.0, size=order + 1).astype(np.float32)
+    coeffs[0] *= 0.35
+    baseline = np.zeros_like(x)
+    for power, coeff in enumerate(coeffs):
+        baseline += coeff * (x ** power)
+    baseline -= baseline.mean()
+    baseline /= float(np.std(baseline) + 1e-8)
+    return (intensity + strength * signal_scale * baseline).astype(np.float32)
+
+
 def add_detector_glitches(
     intensity,
     max_glitches=3,
@@ -204,6 +253,9 @@ class SpectralAugmenter:
         self.warp_prob = float(os.getenv("AUG_WARP_PROB", "0.05"))
         self.warp_sigma = float(os.getenv("AUG_WARP_SIGMA", "6.0"))
         self.warp_alpha = float(os.getenv("AUG_WARP_ALPHA", "0.6"))
+        self.impulse_prob = float(os.getenv("AUG_IMPULSE_PROB", "0.22"))
+        self.fringe_prob = float(os.getenv("AUG_FRINGE_PROB", "0.35"))
+        self.poly_baseline_prob = float(os.getenv("AUG_POLY_BASELINE_PROB", "0.45"))
 
     def set_epoch(self, epoch: int, total_epochs: int):
         self.progress = min(max((epoch - 1) / max(total_epochs - 1, 1), 0.0), 1.0)
@@ -225,6 +277,18 @@ class SpectralAugmenter:
             noisy = add_pink_noise(noisy, noise_level=np.random.uniform(0.003, 0.010) * curriculum)
         if np.random.rand() < 0.35:
             noisy = add_low_frequency_drift(noisy, strength=np.random.uniform(0.004, 0.020) * curriculum)
+        if self.poly_baseline_prob > 0.0 and np.random.rand() < self.poly_baseline_prob:
+            noisy = add_polynomial_baseline(
+                noisy,
+                strength=np.random.uniform(0.010, 0.055) * curriculum,
+                order=np.random.randint(2, 5),
+            )
+        if self.fringe_prob > 0.0 and np.random.rand() < self.fringe_prob:
+            noisy = add_fringe_noise(
+                noisy,
+                amp_range=(0.002 * curriculum, 0.022 * curriculum),
+                cycles_range=(3.0, 32.0),
+            )
         if np.random.rand() < 0.25:
             noisy = add_baseline(noisy, coeff=np.random.uniform(0.00003, 0.00016) * curriculum)
         if np.random.rand() < 0.12:
@@ -232,6 +296,13 @@ class SpectralAugmenter:
                 noisy,
                 num_spikes=np.random.randint(1, 4),
                 spike_height=np.random.uniform(0.05, 0.20) * curriculum,
+            )
+        if self.impulse_prob > 0.0 and np.random.rand() < self.impulse_prob:
+            noisy = add_impulse_spikes(
+                noisy,
+                max_spikes=np.random.randint(2, 8),
+                amp_std_range=(1.5 * curriculum, 7.0 * curriculum),
+                max_width=5,
             )
         if np.random.rand() < 0.30:
             noisy = add_detector_glitches(

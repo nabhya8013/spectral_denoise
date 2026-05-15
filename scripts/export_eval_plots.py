@@ -49,6 +49,9 @@ USE_DETAIL_HEAD = os.getenv("USE_DETAIL_HEAD", str(_CFG.get("use_detail_head", F
 USE_POSITIONAL_BIAS = os.getenv("USE_POSITIONAL_BIAS", str(_CFG.get("use_positional_bias", False))).lower() in ("1", "true", "yes")
 USE_DERIVATIVE_BIAS = os.getenv("USE_DERIVATIVE_BIAS", str(_CFG.get("use_derivative_bias", False))).lower() in ("1", "true", "yes")
 USE_LOCAL_REFINER = os.getenv("USE_LOCAL_REFINER", str(_CFG.get("use_local_refiner", False))).lower() in ("1", "true", "yes")
+USE_SPECTRAL_ATTENTION = os.getenv("USE_SPECTRAL_ATTENTION", str(_CFG.get("use_spectral_attention", False))).lower() in ("1", "true", "yes")
+SPECTRAL_ATTENTION_PRIOR = float(os.getenv("SPECTRAL_ATTENTION_PRIOR", str(_CFG.get("spectral_attention_prior", 0.0))))
+USE_STRIDED_DOWNSAMPLE = os.getenv("USE_STRIDED_DOWNSAMPLE", str(_CFG.get("use_strided_downsample", False))).lower() in ("1", "true", "yes")
 MODEL_PATH = Path(os.getenv("MODEL_PATH", str(Path(_project_root) / "models" / "resunet1d_single_stage_final.pth")))
 
 
@@ -94,6 +97,9 @@ def create_model(device: torch.device) -> ResUNet1D:
         use_positional_bias=USE_POSITIONAL_BIAS,
         use_derivative_bias=USE_DERIVATIVE_BIAS,
         use_local_refiner=USE_LOCAL_REFINER,
+        use_spectral_attention=USE_SPECTRAL_ATTENTION,
+        spectral_attention_prior=SPECTRAL_ATTENTION_PRIOR,
+        use_strided_downsample=USE_STRIDED_DOWNSAMPLE,
     ).to(device)
     model.load_state_dict(torch.load(MODEL_PATH, map_location=device, weights_only=True))
     model.eval()

@@ -1,6 +1,7 @@
 import json
 import os
 import random
+import shutil
 import sys
 from typing import Dict, List
 
@@ -26,21 +27,21 @@ from spectral_losses import CompositeSpectralLoss
 PAIRS_DIR = os.getenv("PAIRS_DIR", os.path.join(_project_root, "data", "pairs"))
 TARGET_LEN = int(os.getenv("TARGET_LEN", "1868"))
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "16"))
-EPOCHS = int(os.getenv("EPOCHS", "40"))
-MAX_LR = float(os.getenv("MAX_LR", "8e-4"))
-MIN_LR = float(os.getenv("MIN_LR", "1e-5"))
+EPOCHS = int(os.getenv("EPOCHS", "24"))
+MAX_LR = float(os.getenv("MAX_LR", "8e-5"))
+MIN_LR = float(os.getenv("MIN_LR", "8e-6"))
 WEIGHT_DECAY = float(os.getenv("WEIGHT_DECAY", "5e-5"))
 BASE_CHANNELS = int(os.getenv("BASE_CHANNELS", "64"))
 SEED = int(os.getenv("SEED", "42"))
-PATIENCE = int(os.getenv("PATIENCE", "10"))
+PATIENCE = int(os.getenv("PATIENCE", "8"))
 USE_AUGMENT = os.getenv("AUGMENT", "1") == "1"
 NORMALIZATION = os.getenv("NORMALIZATION", "joint_zscore")
 EMA_DECAY = float(os.getenv("EMA_DECAY", "0.995"))
 RESIDUAL_LEARNING = os.getenv("RESIDUAL_LEARNING", "1") == "1"
 NORM_TYPE = os.getenv("NORM_TYPE", "group")
-USE_SKIP_GATES = os.getenv("USE_SKIP_GATES", "0") == "1"
+USE_SKIP_GATES = os.getenv("USE_SKIP_GATES", "1") == "1"
 USE_SE = os.getenv("USE_SE", "1") == "1"
-USE_INPUT_MEDIAN = os.getenv("USE_INPUT_MEDIAN", "1") == "1"
+USE_INPUT_MEDIAN = os.getenv("USE_INPUT_MEDIAN", "0") == "1"
 INPUT_MEDIAN_KERNEL = int(os.getenv("INPUT_MEDIAN_KERNEL", "5"))
 INPUT_MEDIAN_BLEND = float(os.getenv("INPUT_MEDIAN_BLEND", "0.15"))
 USE_SPIKE_SUPPRESSOR = os.getenv("USE_SPIKE_SUPPRESSOR", "0") == "1"
@@ -48,69 +49,95 @@ SPIKE_SUPPRESSOR_THRESHOLD = float(os.getenv("SPIKE_SUPPRESSOR_THRESHOLD", "2.5"
 SPIKE_SUPPRESSOR_BLEND = float(os.getenv("SPIKE_SUPPRESSOR_BLEND", "0.85"))
 SPIKE_SUPPRESSOR_EDGE_POINTS = int(os.getenv("SPIKE_SUPPRESSOR_EDGE_POINTS", "96"))
 SPIKE_SUPPRESSOR_EDGE_GAIN = float(os.getenv("SPIKE_SUPPRESSOR_EDGE_GAIN", "1.8"))
-USE_MULTISCALE_CONTEXT = os.getenv("USE_MULTISCALE_CONTEXT", "0") == "1"
-USE_DETAIL_HEAD = os.getenv("USE_DETAIL_HEAD", "0") == "1"
-USE_POSITIONAL_BIAS = os.getenv("USE_POSITIONAL_BIAS", "0") == "1"
-USE_DERIVATIVE_BIAS = os.getenv("USE_DERIVATIVE_BIAS", "0") == "1"
-USE_LOCAL_REFINER = os.getenv("USE_LOCAL_REFINER", "0") == "1"
-MODEL_PATH = os.getenv("MODEL_PATH", os.path.join(_project_root, "models", "resunet1d_single_stage_best.pth"))
+USE_MULTISCALE_CONTEXT = os.getenv("USE_MULTISCALE_CONTEXT", "1") == "1"
+USE_DETAIL_HEAD = os.getenv("USE_DETAIL_HEAD", "1") == "1"
+USE_POSITIONAL_BIAS = os.getenv("USE_POSITIONAL_BIAS", "1") == "1"
+USE_DERIVATIVE_BIAS = os.getenv("USE_DERIVATIVE_BIAS", "1") == "1"
+USE_LOCAL_REFINER = os.getenv("USE_LOCAL_REFINER", "1") == "1"
+USE_SPECTRAL_ATTENTION = os.getenv("USE_SPECTRAL_ATTENTION", "1") == "1"
+SPECTRAL_ATTENTION_PRIOR = float(os.getenv("SPECTRAL_ATTENTION_PRIOR", "0.0"))
+USE_STRIDED_DOWNSAMPLE = os.getenv("USE_STRIDED_DOWNSAMPLE", "0") == "1"
+MODEL_PATH = os.getenv("MODEL_PATH", os.path.join(_project_root, "models", "resunet1d_scientific_candidate.pth"))
+PROMOTE_MODEL_PATH = os.getenv(
+    "PROMOTE_MODEL_PATH",
+    os.path.join(_project_root, "models", "resunet1d_single_stage_final.pth"),
+)
+PROMOTE_RESULTS_PATH = os.getenv(
+    "PROMOTE_RESULTS_PATH",
+    os.path.join(_project_root, "results", "resunet_single_stage_final.json"),
+)
+MIN_PROMOTION_QUALITY = float(os.getenv("MIN_PROMOTION_QUALITY", "95.0"))
+AUTO_PROMOTE = os.getenv("AUTO_PROMOTE", "1") == "1"
+REQUIRE_QUALITY_IMPROVEMENT = os.getenv("REQUIRE_QUALITY_IMPROVEMENT", "1") == "1"
+MIN_IMPROVEMENT_DELTA = float(os.getenv("MIN_IMPROVEMENT_DELTA", "0.0"))
+MAX_PROMOTION_FP_RMSE = float(os.getenv("MAX_PROMOTION_FP_RMSE", "inf"))
+MAX_PROMOTION_PEAK_SHIFT = float(os.getenv("MAX_PROMOTION_PEAK_SHIFT", "inf"))
+MAX_PROMOTION_PEAK_AMP_MAE = float(os.getenv("MAX_PROMOTION_PEAK_AMP_MAE", "inf"))
 RESULTS_PATH = os.getenv(
     "RESULTS_PATH",
-    os.path.join(_project_root, "results", "resunet_single_stage_best_metrics.json"),
+    os.path.join(_project_root, "results", "resunet_scientific_candidate_metrics.json"),
 )
-INIT_MODEL_PATH = os.getenv("INIT_MODEL_PATH", "")
-LOSS_W_MSE = float(os.getenv("LOSS_W_MSE", "0.50"))
-LOSS_W_L1 = float(os.getenv("LOSS_W_L1", "1.0"))
-LOSS_W_D1 = float(os.getenv("LOSS_W_D1", "0.15"))
-LOSS_W_D2 = float(os.getenv("LOSS_W_D2", "0.10"))
-LOSS_W_TV = float(os.getenv("LOSS_W_TV", "0.0025"))
+INIT_MODEL_PATH = os.getenv("INIT_MODEL_PATH", PROMOTE_MODEL_PATH if os.path.isfile(PROMOTE_MODEL_PATH) else "")
+LOSS_W_MSE = float(os.getenv("LOSS_W_MSE", "0.75"))
+LOSS_W_L1 = float(os.getenv("LOSS_W_L1", "0.18"))
+LOSS_W_D1 = float(os.getenv("LOSS_W_D1", "0.50"))
+LOSS_W_D2 = float(os.getenv("LOSS_W_D2", "0.45"))
+LOSS_W_TV = float(os.getenv("LOSS_W_TV", "0.0012"))
 LOSS_W_FFT = float(os.getenv("LOSS_W_FFT", "0.05"))
-LOSS_W_AMP = float(os.getenv("LOSS_W_AMP", "0.10"))
-LOSS_W_BASELINE = float(os.getenv("LOSS_W_BASELINE", "0.05"))
-LOSS_W_PEAK_PROFILE = float(os.getenv("LOSS_W_PEAK_PROFILE", "0.18"))
-LOSS_W_PEAK_CENTER = float(os.getenv("LOSS_W_PEAK_CENTER", "0.30"))
-LOSS_W_EDGE_L1 = float(os.getenv("LOSS_W_EDGE_L1", "0.18"))
-LOSS_W_EDGE_D1 = float(os.getenv("LOSS_W_EDGE_D1", "0.16"))
+LOSS_W_AMP = float(os.getenv("LOSS_W_AMP", "0.26"))
+LOSS_W_BASELINE = float(os.getenv("LOSS_W_BASELINE", "0.02"))
+LOSS_W_PEAK_PROFILE = float(os.getenv("LOSS_W_PEAK_PROFILE", "0.58"))
+LOSS_W_PEAK_CENTER = float(os.getenv("LOSS_W_PEAK_CENTER", "1.35"))
+LOSS_W_EDGE_L1 = float(os.getenv("LOSS_W_EDGE_L1", "0.06"))
+LOSS_W_EDGE_D1 = float(os.getenv("LOSS_W_EDGE_D1", "0.05"))
 LOSS_EDGE_POINTS = int(os.getenv("LOSS_EDGE_POINTS", "96"))
-PEAK_WINDOW_RADIUS = int(os.getenv("PEAK_WINDOW_RADIUS", "8"))
-PEAK_QUANTILE = float(os.getenv("PEAK_QUANTILE", "0.86"))
-PEAK_SOFTMAX_TEMP = float(os.getenv("PEAK_SOFTMAX_TEMP", "12.0"))
-MASK_LEADING_POINTS = int(os.getenv("MASK_LEADING_POINTS", "0"))
-LOSS_W_SMOOTH_CONSISTENCY = float(os.getenv("LOSS_W_SMOOTH_CONSISTENCY", "0.0"))
+PEAK_WINDOW_RADIUS = int(os.getenv("PEAK_WINDOW_RADIUS", "4"))
+PEAK_QUANTILE = float(os.getenv("PEAK_QUANTILE", "0.80"))
+PEAK_SOFTMAX_TEMP = float(os.getenv("PEAK_SOFTMAX_TEMP", "28.0"))
+MASK_LEADING_POINTS = int(os.getenv("MASK_LEADING_POINTS", "3"))
+LOSS_W_SMOOTH_CONSISTENCY = float(os.getenv("LOSS_W_SMOOTH_CONSISTENCY", "0.01"))
 SMOOTH_KERNEL_SIZE = int(os.getenv("SMOOTH_KERNEL_SIZE", "9"))
-LOSS_W_FINGERPRINT_L1 = float(os.getenv("LOSS_W_FINGERPRINT_L1", "0.0"))
-LOSS_W_FINGERPRINT_MSE = float(os.getenv("LOSS_W_FINGERPRINT_MSE", "0.0"))
-LOSS_W_FINGERPRINT_D1 = float(os.getenv("LOSS_W_FINGERPRINT_D1", "0.0"))
+LOSS_W_FINGERPRINT_L1 = float(os.getenv("LOSS_W_FINGERPRINT_L1", "0.28"))
+LOSS_W_FINGERPRINT_MSE = float(os.getenv("LOSS_W_FINGERPRINT_MSE", "0.22"))
+LOSS_W_FINGERPRINT_D1 = float(os.getenv("LOSS_W_FINGERPRINT_D1", "0.18"))
 FINGERPRINT_START = int(os.getenv("FINGERPRINT_START", "104"))
 FINGERPRINT_END = int(os.getenv("FINGERPRINT_END", "726"))
-LOSS_W_CURVATURE_MSE = float(os.getenv("LOSS_W_CURVATURE_MSE", "0.0"))
+LOSS_W_CURVATURE_MSE = float(os.getenv("LOSS_W_CURVATURE_MSE", "0.40"))
 CURVATURE_SCALE = float(os.getenv("CURVATURE_SCALE", "12.0"))
-LOSS_W_VALLEY_UNDER = float(os.getenv("LOSS_W_VALLEY_UNDER", "0.0"))
-VALLEY_QUANTILE = float(os.getenv("VALLEY_QUANTILE", "0.20"))
-LOSS_W_VALLEY_CENTER = float(os.getenv("LOSS_W_VALLEY_CENTER", "0.0"))
-LOSS_W_PEAK_ALIGN = float(os.getenv("LOSS_W_PEAK_ALIGN", "0.0"))
+LOSS_W_VALLEY_UNDER = float(os.getenv("LOSS_W_VALLEY_UNDER", "0.30"))
+VALLEY_QUANTILE = float(os.getenv("VALLEY_QUANTILE", "0.18"))
+LOSS_W_VALLEY_CENTER = float(os.getenv("LOSS_W_VALLEY_CENTER", "0.20"))
+LOSS_W_PEAK_ALIGN = float(os.getenv("LOSS_W_PEAK_ALIGN", "0.38"))
 PEAK_ALIGN_WINDOW = int(os.getenv("PEAK_ALIGN_WINDOW", "5"))
-PEAK_ALIGN_WEIGHT = float(os.getenv("PEAK_ALIGN_WEIGHT", "2.0"))
+PEAK_ALIGN_WEIGHT = float(os.getenv("PEAK_ALIGN_WEIGHT", "2.8"))
 HARD_SAMPLE_FILE = os.getenv("HARD_SAMPLE_FILE", "")
 HARD_SAMPLE_MULTIPLIER = float(os.getenv("HARD_SAMPLE_MULTIPLIER", "1.0"))
-PEAK_POINT_WEIGHT = float(os.getenv("PEAK_POINT_WEIGHT", "1.25"))
-SLOPE_POINT_WEIGHT = float(os.getenv("SLOPE_POINT_WEIGHT", "0.75"))
-FINGERPRINT_POINT_WEIGHT = float(os.getenv("FINGERPRINT_POINT_WEIGHT", "0.0"))
-PEAK_FOCUS_START = int(os.getenv("PEAK_FOCUS_START", "-1"))
-PEAK_FOCUS_END = int(os.getenv("PEAK_FOCUS_END", "-1"))
-LOSS_W_PEAK_DOMINANCE = float(os.getenv("LOSS_W_PEAK_DOMINANCE", "0.0"))
+PEAK_POINT_WEIGHT = float(os.getenv("PEAK_POINT_WEIGHT", "2.7"))
+SLOPE_POINT_WEIGHT = float(os.getenv("SLOPE_POINT_WEIGHT", "1.1"))
+FINGERPRINT_POINT_WEIGHT = float(os.getenv("FINGERPRINT_POINT_WEIGHT", "3.0"))
+PEAK_FOCUS_START = int(os.getenv("PEAK_FOCUS_START", str(FINGERPRINT_START)))
+PEAK_FOCUS_END = int(os.getenv("PEAK_FOCUS_END", str(FINGERPRINT_END)))
+LOSS_W_PEAK_DOMINANCE = float(os.getenv("LOSS_W_PEAK_DOMINANCE", "0.12"))
 PEAK_DOMINANCE_MARGIN_SCALE = float(os.getenv("PEAK_DOMINANCE_MARGIN_SCALE", "0.25"))
-CHECKPOINT_SCORE_MODE = os.getenv("CHECKPOINT_SCORE_MODE", "selection")
+LOSS_W_EXTREMA_MSE = float(os.getenv("LOSS_W_EXTREMA_MSE", "0.22"))
+EXTREMA_WINDOW = int(os.getenv("EXTREMA_WINDOW", "7"))
+EXTREMA_WEIGHT = float(os.getenv("EXTREMA_WEIGHT", "3.0"))
+LOSS_W_SOBOLEV_L1 = float(os.getenv("LOSS_W_SOBOLEV_L1", "0.14"))
+LOSS_W_BASELINE_DRIFT = float(os.getenv("LOSS_W_BASELINE_DRIFT", "0.08"))
+BASELINE_DRIFT_KERNEL = int(os.getenv("BASELINE_DRIFT_KERNEL", "65"))
+CHECKPOINT_SCORE_MODE = os.getenv("CHECKPOINT_SCORE_MODE", "review")
+REQUIRE_CUDA_FOR_TRAINING = os.getenv("REQUIRE_CUDA_FOR_TRAINING", "1") == "1"
+TRAINABLE_SCOPE = os.getenv("TRAINABLE_SCOPE", "all")
 
 
 def get_device() -> torch.device:
-    force_cuda = os.getenv("FORCE_CUDA", "0") == "1"
+    force_cuda = os.getenv("FORCE_CUDA", "0") == "1" or REQUIRE_CUDA_FOR_TRAINING
     if torch.cuda.is_available():
         return torch.device("cuda")
     if force_cuda:
         raise RuntimeError(
-            "FORCE_CUDA=1 but torch.cuda.is_available() is False. "
-            "Fix NVIDIA driver/runtime, then retry."
+            "CUDA is required for training, but torch.cuda.is_available() is False. "
+            "Fix NVIDIA driver/runtime or set REQUIRE_CUDA_FOR_TRAINING=0 for an explicit CPU debug run."
         )
     if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
         return torch.device("mps")
@@ -133,6 +160,20 @@ def safe_float(value) -> float:
     if isinstance(value, float) and np.isnan(value):
         return 0.0
     return float(value)
+
+
+def current_promoted_quality() -> float | None:
+    if not os.path.isfile(PROMOTE_RESULTS_PATH):
+        return None
+    try:
+        with open(PROMOTE_RESULTS_PATH) as f:
+            results = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    value = results.get("overall_quality")
+    if value is None:
+        return None
+    return safe_float(value)
 
 
 def selection_score(metrics: Dict[str, float]) -> float:
@@ -219,7 +260,46 @@ def create_model() -> ResUNet1D:
         use_positional_bias=USE_POSITIONAL_BIAS,
         use_derivative_bias=USE_DERIVATIVE_BIAS,
         use_local_refiner=USE_LOCAL_REFINER,
+        use_spectral_attention=USE_SPECTRAL_ATTENTION,
+        target_len=TARGET_LEN,
+        attention_focus_start=FINGERPRINT_START,
+        attention_focus_end=FINGERPRINT_END,
+        spectral_attention_prior=SPECTRAL_ATTENTION_PRIOR,
+        use_strided_downsample=USE_STRIDED_DOWNSAMPLE,
     )
+
+
+def configure_trainable_scope(model: nn.Module, scope: str) -> int:
+    scope = scope.lower().strip()
+    if scope == "all":
+        for param in model.parameters():
+            param.requires_grad = True
+    elif scope == "head":
+        trainable_prefixes = ("out_conv", "detail_refiner", "local_refiner")
+        for name, param in model.named_parameters():
+            param.requires_grad = name.startswith(trainable_prefixes)
+    elif scope == "decoder":
+        trainable_prefixes = ("dec", "out_conv", "detail_refiner", "local_refiner")
+        for name, param in model.named_parameters():
+            param.requires_grad = name.startswith(trainable_prefixes)
+    elif scope == "downsample_decoder":
+        trainable_prefixes = ("down", "dec", "out_conv", "detail_refiner", "local_refiner")
+        for name, param in model.named_parameters():
+            param.requires_grad = name.startswith(trainable_prefixes)
+    elif scope == "attention_head":
+        trainable_prefixes = ("spectral_attn", "out_conv", "detail_refiner", "local_refiner")
+        for name, param in model.named_parameters():
+            param.requires_grad = name.startswith(trainable_prefixes)
+    else:
+        raise ValueError(
+            f"Unsupported TRAINABLE_SCOPE={scope!r}. "
+            "Use one of: all, head, decoder, downsample_decoder, attention_head."
+        )
+
+    trainable_params = sum(param.numel() for param in model.parameters() if param.requires_grad)
+    if trainable_params <= 0:
+        raise ValueError(f"TRAINABLE_SCOPE={scope!r} left no trainable parameters")
+    return trainable_params
 
 
 def load_hard_sample_weights(train_clean_files: List[str]):
@@ -317,6 +397,11 @@ def create_scheduler(optimizer):
 def main():
     set_seed(SEED)
     device = get_device()
+    if AUTO_PROMOTE and os.path.abspath(MODEL_PATH) == os.path.abspath(PROMOTE_MODEL_PATH):
+        raise ValueError(
+            "Unsafe training configuration: MODEL_PATH points at PROMOTE_MODEL_PATH. "
+            "Use a separate candidate MODEL_PATH so the promoted model cannot be overwritten before the 95% gate."
+        )
     print(f"Using device: {device}")
     if device.type == "cuda":
         print(f"CUDA GPU: {torch.cuda.get_device_name(0)}")
@@ -328,15 +413,23 @@ def main():
         f"spike_thr={SPIKE_SUPPRESSOR_THRESHOLD}, spike_blend={SPIKE_SUPPRESSOR_BLEND}, "
         f"multiscale={USE_MULTISCALE_CONTEXT}, detail_head={USE_DETAIL_HEAD}, "
         f"positional_bias={USE_POSITIONAL_BIAS}, derivative_bias={USE_DERIVATIVE_BIAS}, local_refiner={USE_LOCAL_REFINER}, "
+        f"spectral_attention={USE_SPECTRAL_ATTENTION}, spectral_attention_prior={SPECTRAL_ATTENTION_PRIOR}, "
+        f"strided_downsample={USE_STRIDED_DOWNSAMPLE}, "
         f"mask_leading_points={MASK_LEADING_POINTS}, "
         f"smooth_w={LOSS_W_SMOOTH_CONSISTENCY}, smooth_k={SMOOTH_KERNEL_SIZE}, "
         f"fp_l1={LOSS_W_FINGERPRINT_L1}, fp_mse={LOSS_W_FINGERPRINT_MSE}, fp_d1={LOSS_W_FINGERPRINT_D1}, "
         f"curv_mse={LOSS_W_CURVATURE_MSE}, curv_scale={CURVATURE_SCALE}, "
         f"valley_under={LOSS_W_VALLEY_UNDER}, valley_center={LOSS_W_VALLEY_CENTER}, valley_q={VALLEY_QUANTILE}, "
         f"peak_align={LOSS_W_PEAK_ALIGN}, peak_align_win={PEAK_ALIGN_WINDOW}, "
+        f"extrema_mse={LOSS_W_EXTREMA_MSE}, sobolev_l1={LOSS_W_SOBOLEV_L1}, baseline_drift={LOSS_W_BASELINE_DRIFT}, "
         f"peak_point_w={PEAK_POINT_WEIGHT}, slope_point_w={SLOPE_POINT_WEIGHT}, fp_point_w={FINGERPRINT_POINT_WEIGHT}, "
         f"peak_focus=({PEAK_FOCUS_START},{PEAK_FOCUS_END}), "
         f"peak_dom={LOSS_W_PEAK_DOMINANCE}, peak_dom_margin={PEAK_DOMINANCE_MARGIN_SCALE}, "
+        f"candidate_model={MODEL_PATH}, promote_model={PROMOTE_MODEL_PATH}, min_quality={MIN_PROMOTION_QUALITY}, "
+        f"require_improvement={REQUIRE_QUALITY_IMPROVEMENT}, min_delta={MIN_IMPROVEMENT_DELTA}, "
+        f"max_fp_rmse={MAX_PROMOTION_FP_RMSE}, "
+        f"max_peak_shift={MAX_PROMOTION_PEAK_SHIFT}, max_peak_amp_mae={MAX_PROMOTION_PEAK_AMP_MAE}, "
+        f"require_cuda={REQUIRE_CUDA_FOR_TRAINING}, trainable_scope={TRAINABLE_SCOPE}, "
         f"score_mode={CHECKPOINT_SCORE_MODE}, "
         f"hard_file={HARD_SAMPLE_FILE or 'none'}, hard_mult={HARD_SAMPLE_MULTIPLIER}, "
         f"batch={BATCH_SIZE}, epochs={EPOCHS}, max_lr={MAX_LR}, min_lr={MIN_LR}, wd={WEIGHT_DECAY}"
@@ -399,8 +492,11 @@ def main():
     if INIT_MODEL_PATH and os.path.isfile(INIT_MODEL_PATH):
         model.load_state_dict(torch.load(INIT_MODEL_PATH, map_location=device, weights_only=True), strict=False)
         print(f"Initialized from {INIT_MODEL_PATH}")
+    trainable_params = configure_trainable_scope(model, TRAINABLE_SCOPE)
+    total_params = sum(param.numel() for param in model.parameters())
+    print(f"Trainable scope: {TRAINABLE_SCOPE} ({trainable_params / 1e6:.3f}M / {total_params / 1e6:.3f}M parameters)")
 
-    optimizer = optim.AdamW(model.parameters(), lr=MAX_LR, weight_decay=WEIGHT_DECAY)
+    optimizer = optim.AdamW((param for param in model.parameters() if param.requires_grad), lr=MAX_LR, weight_decay=WEIGHT_DECAY)
     scheduler = create_scheduler(optimizer)
     criterion = CompositeSpectralLoss(
         w_mse=LOSS_W_MSE,
@@ -442,6 +538,12 @@ def main():
         peak_focus_end=PEAK_FOCUS_END,
         w_peak_dominance=LOSS_W_PEAK_DOMINANCE,
         peak_dominance_margin_scale=PEAK_DOMINANCE_MARGIN_SCALE,
+        w_extrema_mse=LOSS_W_EXTREMA_MSE,
+        extrema_window=EXTREMA_WINDOW,
+        extrema_weight=EXTREMA_WEIGHT,
+        w_sobolev_l1=LOSS_W_SOBOLEV_L1,
+        w_baseline_drift=LOSS_W_BASELINE_DRIFT,
+        baseline_drift_kernel=BASELINE_DRIFT_KERNEL,
     )
     scaler = torch.amp.GradScaler("cuda", enabled=(device.type == "cuda"))
     ema = ExponentialMovingAverage(model, decay=EMA_DECAY)
@@ -498,7 +600,12 @@ def main():
             }
         )
 
-        score_value = val_metrics["review_score"] if CHECKPOINT_SCORE_MODE == "review" else val_metrics["selection_score"]
+        if CHECKPOINT_SCORE_MODE == "overall":
+            score_value = val_metrics["overall_quality"]
+        elif CHECKPOINT_SCORE_MODE == "review":
+            score_value = val_metrics["review_score"]
+        else:
+            score_value = val_metrics["selection_score"]
 
         if score_value > best_score:
             best_score = score_value
@@ -580,6 +687,9 @@ def main():
         "use_positional_bias": USE_POSITIONAL_BIAS,
         "use_derivative_bias": USE_DERIVATIVE_BIAS,
         "use_local_refiner": USE_LOCAL_REFINER,
+        "use_spectral_attention": USE_SPECTRAL_ATTENTION,
+        "spectral_attention_prior": SPECTRAL_ATTENTION_PRIOR,
+        "use_strided_downsample": USE_STRIDED_DOWNSAMPLE,
         "base_channels": BASE_CHANNELS,
         "train_config": {
             "batch_size": BATCH_SIZE,
@@ -592,6 +702,17 @@ def main():
             "seed": SEED,
             "augment": USE_AUGMENT,
             "checkpoint_score_mode": CHECKPOINT_SCORE_MODE,
+            "require_cuda_for_training": REQUIRE_CUDA_FOR_TRAINING,
+            "min_promotion_quality": MIN_PROMOTION_QUALITY,
+            "auto_promote": AUTO_PROMOTE,
+            "require_quality_improvement": REQUIRE_QUALITY_IMPROVEMENT,
+            "min_improvement_delta": MIN_IMPROVEMENT_DELTA,
+            "max_promotion_fp_rmse": MAX_PROMOTION_FP_RMSE,
+            "max_promotion_peak_shift": MAX_PROMOTION_PEAK_SHIFT,
+            "max_promotion_peak_amp_mae": MAX_PROMOTION_PEAK_AMP_MAE,
+            "trainable_scope": TRAINABLE_SCOPE,
+            "trainable_params": trainable_params,
+            "total_params": total_params,
         },
         "loss_config": {
             "w_mse": LOSS_W_MSE,
@@ -633,10 +754,18 @@ def main():
             "peak_focus_end": PEAK_FOCUS_END,
             "w_peak_dominance": LOSS_W_PEAK_DOMINANCE,
             "peak_dominance_margin_scale": PEAK_DOMINANCE_MARGIN_SCALE,
+            "w_extrema_mse": LOSS_W_EXTREMA_MSE,
+            "extrema_window": EXTREMA_WINDOW,
+            "extrema_weight": EXTREMA_WEIGHT,
+            "w_sobolev_l1": LOSS_W_SOBOLEV_L1,
+            "w_baseline_drift": LOSS_W_BASELINE_DRIFT,
+            "baseline_drift_kernel": BASELINE_DRIFT_KERNEL,
             "hard_sample_file": HARD_SAMPLE_FILE,
             "hard_sample_multiplier": HARD_SAMPLE_MULTIPLIER,
         },
         "model_path": MODEL_PATH,
+        "promote_model_path": PROMOTE_MODEL_PATH,
+        "promotion_threshold": MIN_PROMOTION_QUALITY,
         "pairs_dir": PAIRS_DIR,
         **final_metrics,
         "history": history,
@@ -657,10 +786,62 @@ def main():
     print(f"  Peak Amp MAE    : {safe_float(results['mean_peak_amp_mae']):.4f}")
     print(f"  Peak Shift Mean : {safe_float(results['mean_peak_shift_mean_abs']):.3f}")
 
+    promoted = False
+    prior_quality = current_promoted_quality()
+    improvement_floor = None
+    if REQUIRE_QUALITY_IMPROVEMENT and prior_quality is not None:
+        improvement_floor = prior_quality + MIN_IMPROVEMENT_DELTA
+    quality_passed = results["overall_quality"] >= MIN_PROMOTION_QUALITY
+    improvement_passed = improvement_floor is None or results["overall_quality"] >= improvement_floor
+    fp_rmse_passed = safe_float(results.get("mean_rmse_fingerprint")) <= MAX_PROMOTION_FP_RMSE
+    peak_shift_passed = safe_float(results.get("mean_peak_shift_mean_abs")) <= MAX_PROMOTION_PEAK_SHIFT
+    peak_amp_passed = safe_float(results.get("mean_peak_amp_mae")) <= MAX_PROMOTION_PEAK_AMP_MAE
+
+    results["prior_promoted_quality"] = prior_quality
+    results["promotion_quality_passed"] = quality_passed
+    results["promotion_improvement_passed"] = improvement_passed
+    results["promotion_fp_rmse_passed"] = fp_rmse_passed
+    results["promotion_peak_shift_passed"] = peak_shift_passed
+    results["promotion_peak_amp_passed"] = peak_amp_passed
+
+    if AUTO_PROMOTE and quality_passed and improvement_passed and fp_rmse_passed and peak_shift_passed and peak_amp_passed:
+        os.makedirs(os.path.dirname(PROMOTE_MODEL_PATH), exist_ok=True)
+        os.makedirs(os.path.dirname(PROMOTE_RESULTS_PATH), exist_ok=True)
+        if os.path.abspath(MODEL_PATH) != os.path.abspath(PROMOTE_MODEL_PATH):
+            shutil.copy2(MODEL_PATH, PROMOTE_MODEL_PATH)
+        promoted = True
+        print(
+            f"Promotion gate passed: overall_quality={results['overall_quality']:.2f}% "
+            f">= {MIN_PROMOTION_QUALITY:.2f}%. Promoted to {PROMOTE_MODEL_PATH}"
+        )
+    elif AUTO_PROMOTE:
+        reason = []
+        if not quality_passed:
+            reason.append(f"below {MIN_PROMOTION_QUALITY:.2f}% minimum")
+        if not improvement_passed and improvement_floor is not None:
+            reason.append(f"below current promoted quality floor {improvement_floor:.2f}%")
+        if not fp_rmse_passed:
+            reason.append(f"fingerprint RMSE above {MAX_PROMOTION_FP_RMSE:.4f}")
+        if not peak_shift_passed:
+            reason.append(f"peak shift above {MAX_PROMOTION_PEAK_SHIFT:.4f}")
+        if not peak_amp_passed:
+            reason.append(f"peak amp MAE above {MAX_PROMOTION_PEAK_AMP_MAE:.4f}")
+        print(
+            f"Promotion gate failed: overall_quality={results['overall_quality']:.2f}% "
+            f"({'; '.join(reason)}). Existing promoted model left unchanged at {PROMOTE_MODEL_PATH}"
+        )
+    else:
+        print("Auto-promotion disabled; candidate model left unpromoted.")
+
+    results["promoted"] = promoted
+
     os.makedirs(os.path.dirname(RESULTS_PATH), exist_ok=True)
     with open(RESULTS_PATH, "w") as f:
         json.dump(results, f, indent=2)
     print(f"\nMetrics saved to {RESULTS_PATH}")
+    if promoted and os.path.abspath(RESULTS_PATH) != os.path.abspath(PROMOTE_RESULTS_PATH):
+        shutil.copy2(RESULTS_PATH, PROMOTE_RESULTS_PATH)
+        print(f"Promoted metrics saved to {PROMOTE_RESULTS_PATH}")
 
 
 if __name__ == "__main__":

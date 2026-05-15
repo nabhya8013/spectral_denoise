@@ -121,6 +121,64 @@ class SqueezeExcite1D(nn.Module):
         return x * scale
 
 
+class SpectralAttention1D(nn.Module):
+    """Lightweight position-aware attention over the spectral axis."""
+
+    def __init__(
+        self,
+        channels: int,
+        target_len: int = 1868,
+        focus_start: int = 104,
+        focus_end: int = 726,
+        hidden_channels: int | None = None,
+        prior_strength: float = 0.0,
+        max_gain: float = 0.45,
+        norm_type: str = "group",
+    ):
+        super().__init__()
+        hidden = hidden_channels or max(channels // 8, 16)
+        self.target_len = max(1, int(target_len))
+        self.focus_start = int(focus_start)
+        self.focus_end = int(focus_end)
+        self.prior_strength = float(prior_strength)
+        self.max_gain = float(max_gain)
+
+        self.feature_gate = nn.Sequential(
+            ReflectionConv1d(channels, hidden, kernel_size=7),
+            _make_norm(hidden, norm_type),
+            nn.GELU(),
+            ReflectionConv1d(hidden, 1, kernel_size=7),
+        )
+        self.coord_gate = nn.Sequential(
+            nn.Conv1d(3, hidden, kernel_size=1),
+            nn.GELU(),
+            nn.Conv1d(hidden, 1, kernel_size=1),
+        )
+        nn.init.zeros_(self.feature_gate[-1].conv.weight)
+        nn.init.zeros_(self.coord_gate[-1].weight)
+        if self.coord_gate[-1].bias is not None:
+            nn.init.zeros_(self.coord_gate[-1].bias)
+
+    def _coordinate_features(self, x: torch.Tensor) -> torch.Tensor:
+        b, _, length = x.shape
+        coord = torch.linspace(-1.0, 1.0, length, device=x.device, dtype=x.dtype).view(1, 1, length)
+        focus = torch.zeros_like(coord)
+        start = int(round(max(0, self.focus_start) / self.target_len * length))
+        end = int(round(max(self.focus_start + 1, self.focus_end) / self.target_len * length))
+        start = max(0, min(start, length - 1))
+        end = max(start + 1, min(end, length))
+        focus[..., start:end] = 1.0
+        edge_distance = 1.0 - torch.abs(coord)
+        return torch.cat([coord, focus, edge_distance], dim=1).expand(b, -1, -1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        coords = self._coordinate_features(x)
+        focus_prior = coords[:, 1:2]
+        logits = self.feature_gate(x) + self.coord_gate(coords) + self.prior_strength * focus_prior
+        gain = 1.0 + self.max_gain * torch.tanh(logits)
+        return x * gain
+
+
 class MultiScaleContext1D(nn.Module):
     def __init__(self, channels: int, norm_type: str = "group", use_se: bool = True):
         super().__init__()
@@ -332,6 +390,25 @@ class LocalRefiner1D(nn.Module):
         return self.out(self.net(feats))
 
 
+class StridedDownsample1D(nn.Module):
+    """Trainable downsampling that preserves channel identity at initialization."""
+
+    def __init__(self, channels: int):
+        super().__init__()
+        self.conv = nn.Conv1d(
+            channels,
+            channels,
+            kernel_size=2,
+            stride=2,
+            groups=channels,
+            bias=False,
+        )
+        nn.init.constant_(self.conv.weight, 0.5)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.conv(x)
+
+
 class ResUNet1D(nn.Module):
     def __init__(
         self,
@@ -355,6 +432,12 @@ class ResUNet1D(nn.Module):
         use_positional_bias: bool = False,
         use_derivative_bias: bool = False,
         use_local_refiner: bool = False,
+        use_spectral_attention: bool = False,
+        target_len: int = 1868,
+        attention_focus_start: int = 104,
+        attention_focus_end: int = 726,
+        spectral_attention_prior: float = 0.0,
+        use_strided_downsample: bool = False,
     ):
         super().__init__()
         self.residual_learning = residual_learning
@@ -369,6 +452,8 @@ class ResUNet1D(nn.Module):
         self.use_positional_bias = use_positional_bias
         self.use_derivative_bias = use_derivative_bias
         self.use_local_refiner = use_local_refiner
+        self.use_spectral_attention = use_spectral_attention
+        self.use_strided_downsample = use_strided_downsample
         self.input_median = MedianFilter1D(kernel_size=input_median_kernel) if use_input_median else nn.Identity()
         self.spike_suppressor = (
             AdaptiveSpikeSuppressor1D(
@@ -384,12 +469,51 @@ class ResUNet1D(nn.Module):
         )
 
         self.enc1 = ResidualConvBlock1D(in_channels, base_channels, norm_type=norm_type, use_se=use_se)
+        self.spectral_attn1 = (
+            SpectralAttention1D(
+                base_channels,
+                target_len=target_len,
+                focus_start=attention_focus_start,
+                focus_end=attention_focus_end,
+                prior_strength=spectral_attention_prior,
+                norm_type=norm_type,
+            )
+            if use_spectral_attention
+            else nn.Identity()
+        )
         self.positional_encoder = PositionalEncoder1D(base_channels) if use_positional_bias else nn.Identity()
         self.derivative_encoder = DerivativeEncoder1D(base_channels) if use_derivative_bias else nn.Identity()
         self.enc2 = ResidualConvBlock1D(base_channels, base_channels * 2, norm_type=norm_type, use_se=use_se)
+        self.spectral_attn2 = (
+            SpectralAttention1D(
+                base_channels * 2,
+                target_len=target_len,
+                focus_start=attention_focus_start,
+                focus_end=attention_focus_end,
+                prior_strength=spectral_attention_prior,
+                norm_type=norm_type,
+            )
+            if use_spectral_attention
+            else nn.Identity()
+        )
         self.enc3 = ResidualConvBlock1D(base_channels * 2, base_channels * 4, norm_type=norm_type, use_se=use_se)
+        self.spectral_attn3 = (
+            SpectralAttention1D(
+                base_channels * 4,
+                target_len=target_len,
+                focus_start=attention_focus_start,
+                focus_end=attention_focus_end,
+                prior_strength=spectral_attention_prior,
+                norm_type=norm_type,
+            )
+            if use_spectral_attention
+            else nn.Identity()
+        )
 
         self.pool = nn.MaxPool1d(kernel_size=2, stride=2)
+        self.down1 = StridedDownsample1D(base_channels) if use_strided_downsample else self.pool
+        self.down2 = StridedDownsample1D(base_channels * 2) if use_strided_downsample else self.pool
+        self.down3 = StridedDownsample1D(base_channels * 4) if use_strided_downsample else self.pool
 
         self.bottleneck1 = ResidualConvBlock1D(
             base_channels * 4,
@@ -467,10 +591,13 @@ class ResUNet1D(nn.Module):
             e1 = e1 + self.positional_encoder(e1)
         if self.use_derivative_bias:
             e1 = e1 + self.derivative_encoder(residual_input)
-        e2 = self.enc2(self.pool(e1))
-        e3 = self.enc3(self.pool(e2))
+        e1 = self.spectral_attn1(e1)
+        e2 = self.enc2(self.down1(e1))
+        e2 = self.spectral_attn2(e2)
+        e3 = self.enc3(self.down2(e2))
+        e3 = self.spectral_attn3(e3)
 
-        b = self.bottleneck1(self.pool(e3))
+        b = self.bottleneck1(self.down3(e3))
         b = self.bottleneck2(b)
         b = self.bottleneck3(b)
         b = self.multiscale_context(b)

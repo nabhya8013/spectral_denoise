@@ -1,7 +1,8 @@
 # Existing project-specific ignores
 *.npy
 *.txt
-/results
+/results/*
+!/results/resunet_single_stage_final.json
 /data
 /snapshots
 notebooks/demo_analysis.ipynb
@@ -39,3 +40,5 @@ htmlcov/
 # OS files
 .DS_Store
 Thumbs.db
+
+/backups/*

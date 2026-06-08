@@ -4,7 +4,7 @@ This project implements a **1D Residual U-Net** (`ResUNet1D`) tailored for achie
 
 ## About The Project
 
-This pipeline trains and evaluates a single-stage `ResUNet1D` to separate spectral signal from noise. The key focus here is avoiding the "peak shift" and "peak rounding" artifacts commonly seen in standard MSE-driven regression, specifically achieving a high-quality reconstruction in complex, feature-rich spectral datasets.
+This pipeline trains and evaluates a single-stage `ResUNet1D` model for spectral signal denoising. The architecture is specifically optimized to minimize common reconstruction artifacts such as peak shifting and peak rounding, which frequently arise in MSE-driven regression models. The goal is to produce high-fidelity reconstructions that preserve peak locations, shapes, and intensities, even in complex and feature-rich spectral datasets.
 
 ### Architecture Highlights
 
